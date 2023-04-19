@@ -26,14 +26,15 @@ impl Table {
             store
         })
     }
-    pub async fn get(&self, key: &[u8] ) -> Result<Option<[u8]>> {
-        Ok(None)
-    }
-    pub async fn put(&self, key: &[u8], data: &[u8]) -> Result<()>{
-        Ok(())
-    }
-    pub async fn delete(&self, key: &[u8]) -> Result<()> {
-        Ok(())
-    }
+    // pub async fn get(&self, key: &[u8] ) -> Result<Option<[u8]>> {
+    //     Ok(None)
+    // }
+    // pub async fn put(&self, key: &[u8], data: &[u8]) -> Result<()>{
+    //     Ok(())
+    // }
+    // pub async fn delete(&self, key: &[u8]) -> Result<()> {
+    //     Ok(())
+    // }
+    // pub async fn close(&self) -> Result<()>{Ok(())}
 
 }

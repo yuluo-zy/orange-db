@@ -1,0 +1,11 @@
+
+[package]
+name = "db"
+version.workspace = true
+edition.workspace = true
+description = "基于 bw-tree的 kv存储"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = "1.24.1"
+anyhow = "1.0.68"
