@@ -135,9 +135,55 @@ impl<'a> From<PagePtr> for PageMut<'a> {
 }
 
 /// 针对 page 不可变引用
+#[derive(Copy, Clone)]
 pub struct PageRef<'a> {
     ptr: PagePtr,
     _marker: PhantomData<&'a mut ()>,
+}
+
+
+impl<'a> PageRef<'a> {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
+        unsafe {
+            let ptr = NonNull::new_unchecked(buf.as_ptr() as *mut _);
+            PagePtr::new(ptr, buf.len()).into()
+        }
+    }
+}
+
+impl<'a> Deref for PageRef<'a> {
+    type Target = PagePtr;
+
+    fn deref(&self) -> &Self::Target {
+        &self.ptr
+    }
+}
+
+// impl<'a> fmt::Debug for PageRef<'a> {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         self.ptr.fmt(f)
+//     }
+// }
+
+impl<'a> From<&'a [u8]> for PageRef<'a> {
+    fn from(buf: &'a [u8]) -> Self {
+        PageRef::new(buf)
+    }
+}
+
+impl<'a> From<PagePtr> for PageRef<'a> {
+    fn from(ptr: PagePtr) -> Self {
+        Self {
+            ptr,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> From<PageMut<'a>> for PageRef<'a> {
+    fn from(buf: PageMut<'a>) -> Self {
+        buf.ptr.into()
+    }
 }
 
 /// page 构建对象
@@ -170,7 +216,58 @@ pub struct PageInfo {
     size: usize,
 }
 
-impl PageInfo {}
+impl PageInfo {
+    #[inline]
+    pub(crate) fn from_raw(meta: u64, next: u64, size: usize) -> Self {
+        PageInfo { meta, next, size }
+    }
+
+    /// Returns the page tier.
+    #[inline]
+    pub(crate) fn tier(&self) -> PageTier {
+        self.flags().tier()
+    }
+
+    /// Returns the page kind
+    #[inline]
+    pub(crate) fn kind(&self) -> PageKind {
+        self.flags().kind()
+    }
+
+    /// Returns the page epoch.
+    #[inline]
+    pub(crate) fn epoch(&self) -> u64 {
+        self.meta & PAGE_EPOCH_MAX
+    }
+
+    /// Returns the address of the next page.
+    #[inline]
+    pub(crate) fn chain_next(&self) -> u64 {
+        self.next
+    }
+
+    /// Returns the length of the chain.
+    #[inline]
+    pub(crate) fn chain_len(&self) -> u8 {
+        (self.meta >> ((PAGE_HEADER_LEN + 1) * 8)) as u8
+    }
+
+    /// Returns the page size.
+    #[inline]
+    pub(crate) fn size(&self) -> usize {
+        self.size
+    }
+
+    #[inline]
+    pub(crate) fn value(&self) -> (u64, u64) {
+        (self.meta, self.next)
+    }
+
+    #[inline]
+    fn flags(&self) -> PageFlag {
+        PageFlag((self.meta >> (PAGE_HEADER_LEN * 8)) as u8)
+    }
+}
 
 pub struct PageFlag(u8);
 
