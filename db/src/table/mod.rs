@@ -2,14 +2,14 @@ use anyhow::Result;
 
 use std::path::Path;
 use std::sync::Arc;
-use crate::store::Store;
+// use crate::store::Store;
 use crate::tree::Tree;
 
 
 /// 数据表结构, 用于数据分区
 pub struct Table {
     tree: Arc<Tree>,
-    store: Arc<Store>
+    // store: Arc<Store>
 }
 
 /// 配置数据表的选项
@@ -20,10 +20,10 @@ pub struct TableOptions {
 impl Table {
     pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let tree = Arc::new(Tree{});
-        let store = Arc::new(Store{});
+        // let store = Arc::new(Store{});
         Ok(Table {
             tree,
-            store
+            // store
         })
     }
     // pub async fn get(&self, key: &[u8] ) -> Result<Option<[u8]>> {
