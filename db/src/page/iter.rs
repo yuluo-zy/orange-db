@@ -222,6 +222,7 @@ pub(crate) struct MergingIter<I>
         I: Iterator,
         OrderedIter<I>: Iterator + Ord,
 {
+    // 使用最大堆来实现优先级队列
     heap: BinaryHeap<Reverse<OrderedIter<I>>>,
 }
 
@@ -298,6 +299,7 @@ pub(crate) struct MergingIterBuilder<I>
     where
         I: Iterator,
 {
+
     iters: Vec<Reverse<OrderedIter<I>>>,
 }
 

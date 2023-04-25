@@ -200,6 +200,10 @@ impl PageBuild {
         }
     }
 
+    pub(super) fn size(&self, content_size: usize) -> usize {
+        PAGE_CONTENT_LEN + content_size
+    }
+
     pub fn build(&self, page: &mut PageMut<'_>) {
         let flags = PageFlag::new(self.kind, self.tier);
         page.set_flags(flags);
