@@ -9,3 +9,4 @@ description = "基于 bw-tree的 kv存储"
 [dependencies]
 tokio = { version = "1.24.1",  features = ["full"] }
 anyhow = "1.0.68"
+thiserror="1.0.38"

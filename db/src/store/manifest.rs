@@ -1,8 +1,10 @@
 use std::{fs, io::ErrorKind, path::PathBuf};
-use std::fs::File;
-use std::io::Write;
+use std::fs::{read_dir, rename};
+use std::io::SeekFrom;
 use anyhow::{anyhow, Result};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::fs::{File, remove_file};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use crate::error::Error;
 use crate::store::meta::VersionEdit;
 
 
@@ -49,10 +51,10 @@ impl Manifest {
     }
 
     async fn create_base_dir_if_not_exist(&self) -> Result<()> {
-        match std::fs::create_dir_all(&self.base).await {
+        match fs::create_dir_all(&self.base).await {
             Ok(_) => {}
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                let raw_metadata = std::fs::metadata(&self.base)?;
+                let raw_metadata = fs::metadata(&self.base)?;
 
                 if !raw_metadata.is_dir() {
                     panic!("base dir is not a dir")
@@ -64,7 +66,7 @@ impl Manifest {
     }
 
     async fn open_base_dir(&mut self) -> Result<()> {
-        let file = File::open(&self.base)?;
+        let file = File::open(&self.base).await?;
         if !file.metadata()?.is_dir() {
             return Err(anyhow::Error::from(ErrorKind::NotADirectory));
         }
@@ -87,10 +89,7 @@ impl Manifest {
         self.next_file_id
     }
 
-    // Record a new version_edit to manifest file.
-    // it will rolling file when the file size over `max_file_size`.
-    // so it need pass-in a `version_snapshot` to get current snapshot when it
-    // rolling.
+    /// 将一个新的 version_edit 写入到 manifest 文件中，然后在文件大小超过 max_file_size 时进行文件滚动。在文件滚动时，需要传递一个 version_snapshot 参数以获取当前的快照
     pub(crate) async fn record_version_edit(
         &mut self,
         ve: VersionEdit,
@@ -106,7 +105,7 @@ impl Manifest {
             let path = self
                 .base
                 .join(format!("{}_{}", MANIFEST_FILE_NAME, file_num));
-            let current_writer = self.env.open_sequential_writer(&path).await?;
+            let current_writer = File::create(&path).await?;
             current = Some(ManifestWriter {
                 current_file_size: 0,
                 current_writer,
@@ -117,23 +116,27 @@ impl Manifest {
         };
 
         let mut current = current.unwrap();
-        let written = if rolled_path.is_some() {
+        let written = if rolled_path.is_some() {  // 说明需要进行滚动了
             // TODO: remove new created file when write fail.
             let base_snapshot = version_snapshot();
+            // 先写入基础镜像
             let base_written = VersionEditEncoder(base_snapshot)
                 .encode(&mut current.current_writer)
                 .await?;
+            // 再写入当前版本号
             match VersionEditEncoder(ve)
                 .encode(&mut current.current_writer)
                 .await
             {
                 Ok(record_written) => base_written + record_written,
                 Err(err) => {
-                    let _ = self.env.remove_file(rolled_path.as_ref().unwrap()).await;
+                    // 因为是滚动下一个文件
+                    remove_file(rolled_path.as_ref().unwrap()).await?;
                     return Err(err);
                 }
             }
         } else {
+            // 继续写入
             VersionEditEncoder(ve)
                 .encode(&mut current.current_writer)
                 .await?
@@ -170,7 +173,7 @@ impl Manifest {
             let path = self
                 .base
                 .join(format!("{}_{}", MANIFEST_FILE_NAME, current_file));
-            let reader = self.env.open_positional_reader(path).await?;
+            let reader = File::open(path).await?;
             let mut decoder = VersionEditDecoder::new(reader);
             let mut ves = Vec::new();
             while let Some(ve) = decoder.next_record().await.map_err(|_| Error::Corrupted)? {
@@ -184,9 +187,7 @@ impl Manifest {
 
     async fn load_current(&self) -> Result<Option<u32 /* file_num */>> {
         // 查看当前数据 它使用的是文件计数
-        let curr_file_reader = match self
-            .env
-            .open_positional_reader(self.base.join(CURRENT_FILE_NAME))
+        let mut curr_file_reader = match File::open(self.base.join(CURRENT_FILE_NAME))
             .await
         {
             Ok(f) => f,
@@ -195,7 +196,7 @@ impl Manifest {
         };
         let mut file_num_bytes = vec![0u8; core::mem::size_of::<u32>()];
         curr_file_reader
-            .read_exact_at(&mut file_num_bytes, 0)
+            .read_exact(&mut file_num_bytes)
             .await?;
         let file_num = u32::from_le_bytes(
             file_num_bytes[0..core::mem::size_of::<u32>()]
@@ -212,7 +213,7 @@ impl Manifest {
                 .join(format!("curr.{}.{}", file_num, TEMPLE_SUFFIX));
 
             {
-                let mut tmp_file = self.env.open_sequential_writer(&tmp_path).await?;
+                let mut tmp_file = File::create(&tmp_path).await?;
                 tmp_file.write_all(&file_num.to_le_bytes()).await?;
                 tmp_file
                     .sync_all()
@@ -220,14 +221,12 @@ impl Manifest {
                     .expect("sync tmp current file fail");
             }
 
-            match self
-                .env
-                .rename(&tmp_path, self.base.join(CURRENT_FILE_NAME))
+            match rename(&tmp_path, self.base.join(CURRENT_FILE_NAME))
                 .await
             {
                 Ok(_) => Ok(()),
                 Err(_err) => {
-                    let _ = self.env.remove_file(&tmp_path).await;
+                    let _ = remove_file(&tmp_path).await?;
                     // TODO: throw right error.
                     Err(Error::Corrupted)
                 }
@@ -258,7 +257,7 @@ impl Manifest {
         }
 
         let mut wait_remove_paths = Vec::new();
-        for path in self.env.read_dir(&self.base)? {
+        for path in read_dir(&self.base)? {
             let file_path = path.unwrap().path();
             if let Some(ext) = file_path.extension() {
                 if ext.to_str().unwrap() == TEMPLE_SUFFIX {
@@ -276,7 +275,7 @@ impl Manifest {
 
         let need_remove = !wait_remove_paths.is_empty();
         for path in wait_remove_paths {
-            self.env.remove_file(path).await?;
+            remove_file(path).await?;
         }
 
         if need_remove {
@@ -295,7 +294,7 @@ impl Manifest {
 struct VersionEditEncoder(VersionEdit);
 
 impl VersionEditEncoder {
-    async fn encode(&self, w: &mut tokio::fs::File) -> Result<usize> {
+    async fn encode(&self, w: &mut File) -> Result<usize> {
         let bytes = self.0.encode_to_vec();
         w.write_all(&bytes.len().to_le_bytes()).await?;
         w.write_all(&bytes).await?;
@@ -310,15 +309,17 @@ struct VersionEditDecoder {
 
 impl VersionEditDecoder {
     fn new(reader: File) -> Self {
-        Self {File, offset: 0 }
+        Self { reader, offset: 0 }
     }
+
     async fn next_record(&mut self) -> Result<Option<VersionEdit>> {
         let mut offset = self.offset;
         let len = {
             let mut len_bytes = vec![0u8; core::mem::size_of::<u64>()];
+            self.reader.seek(SeekFrom::Current(offset as i64)).await?;
             match self
                 .reader
-                .read_exact_at(&mut len_bytes, offset as u64)
+                .read_exact(&mut len_bytes)
                 .await
             {
                 Ok(_) => {}
@@ -331,11 +332,12 @@ impl VersionEditDecoder {
                     .map_err(|_| Error::Corrupted)?,
             )
         };
-        offset += core::mem::size_of::<u64>() as u64;
+        offset += (core::mem::size_of::<u64>() as u64);
         let ve = {
             let mut ve_bytes = vec![0u8; len as usize];
+            self.reader.seek(SeekFrom::Current(offset as i64)).await?;
             self.reader
-                .read_exact_at(&mut ve_bytes, offset as u64)
+                .read_exact(&mut ve_bytes)
                 .await?;
             VersionEdit::decode(ve_bytes.as_slice()).map_err(|_| Error::Corrupted)?
         };
