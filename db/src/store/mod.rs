@@ -1,3 +1,5 @@
+mod manifest;
+mod meta;
 
 /// Options to configure a page store.
 #[non_exhaustive]
