@@ -10,3 +10,12 @@ description = "基于 bw-tree的 kv存储"
 tokio = { version = "1.24.1",  features = ["full"] }
 anyhow = "1.0.68"
 thiserror="1.0.38"
+prost = "0.11"
+
+[dev-dependencies]
+env_logger = "0.10"
+rand = "0.8.5"
+tempdir = "0.3.7"
+quickcheck = "1"
+rand_distr = "0.4"
+tempfile = "3.3.0"
