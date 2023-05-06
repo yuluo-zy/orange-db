@@ -1,9 +1,8 @@
-use std::{fs, io::ErrorKind, path::PathBuf};
-use std::io::SeekFrom;
+use std::{fs, io::ErrorKind, path::PathBuf, usize};
 use anyhow::{anyhow, bail, Result};
 use prost::Message;
-use tokio::fs::{create_dir_all, File, metadata, OpenOptions, read_dir, remove_file, rename};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::fs::{create_dir_all, File, metadata, OpenOptions, read_dir, remove_file, rename,};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt, SeekFrom};
 use crate::error::Error;
 use crate::store::meta::VersionEdit;
 
@@ -44,6 +43,8 @@ impl Manifest {
         };
         manifest.create_base_dir_if_not_exist().await?;
         manifest.current_file_num = manifest.load_current().await?;
+        // 清理过期文件
+        // TODO: 清理到异步任务中
         manifest.cleanup_obsolete_files().await?;
         Ok(manifest)
     }
@@ -89,6 +90,7 @@ impl Manifest {
         let rolled_path = if current.is_none()
             || current.as_ref().unwrap().current_file_size > self.max_file_size
         {
+
             file_num += 1;
             let path = self
                 .base
@@ -289,7 +291,7 @@ impl VersionEditDecoder {
         let mut offset = self.offset;
         let len = {
             let mut len_bytes = vec![0u8; core::mem::size_of::<u64>()];
-            self.reader.seek(SeekFrom::Current(offset as i64)).await?;
+            self.reader.seek(SeekFrom::Start(offset)).await?;
             match self
                 .reader
                 .read_exact(&mut len_bytes)
@@ -297,7 +299,7 @@ impl VersionEditDecoder {
             {
                 Err(err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(None),
                 e @ Err(_) => e?,
-                Ok(_) => todo!()
+                _ => {0}
             };
             u64::from_le_bytes(
                 len_bytes[0..core::mem::size_of::<u64>()]
@@ -308,10 +310,12 @@ impl VersionEditDecoder {
         offset += (core::mem::size_of::<u64>() as u64);
         let ve = {
             let mut ve_bytes = vec![0u8; len as usize];
-            self.reader.seek(SeekFrom::Current(offset as i64)).await?;
+            self.reader.seek(SeekFrom::Start(offset)).await?;
             self.reader
                 .read_exact(&mut ve_bytes)
                 .await?;
+            // error
+            println!("{:?}", ve_bytes);
             VersionEdit::decode(ve_bytes.as_slice()).map_err(|_| Error::Corrupted)?
         };
         self.offset = offset + len;
@@ -394,163 +398,161 @@ mod tests {
             assert_eq!(files, 2);
         }
     }
-    //
-    // #[photonio::test]
-    // fn test_roll_manifest() {
-    //     let env = crate::env::Photon;
-    //
-    //     let base = tempdir::TempDir::new("curr_test_roll").unwrap();
-    //
-    //     let ver = std::sync::Arc::new(std::sync::Mutex::new(VersionEdit {
-    //         file_stream: Some(StreamEdit {
-    //             new_files: vec![],
-    //             deleted_files: vec![],
-    //         }),
-    //     }));
-    //
-    //     let ve_snapshot = || {
-    //         let ver = ver.lock().unwrap();
-    //         ver.to_owned()
-    //     };
-    //
-    //     let mock_apply = |ve: &VersionEdit| {
-    //         let mut ver = ver.lock().unwrap();
-    //         let edit = ver.file_stream.as_mut().unwrap();
-    //         edit.new_files
-    //             .extend_from_slice(&ve.file_stream.as_ref().unwrap().new_files);
-    //         edit.new_files.retain(|f| {
-    //             !ve.file_stream
-    //                 .as_ref()
-    //                 .unwrap()
-    //                 .deleted_files
-    //                 .iter()
-    //                 .any(|d| *d == f.id)
-    //         })
-    //     };
-    //
-    //     {
-    //         let mut manifest = Manifest::open(env.to_owned(), base.as_ref()).await.unwrap();
-    //         manifest.max_file_size = 100; // set a small threshold value to trigger roll
-    //         assert_eq!(manifest.current_file_num, None);
-    //
-    //         let ve = VersionEdit {
-    //             file_stream: Some(StreamEdit {
-    //                 new_files: new_files(vec![0]),
-    //                 deleted_files: vec![],
-    //             }),
-    //         };
-    //         manifest
-    //             .record_version_edit(ve.to_owned(), ve_snapshot)
-    //             .await
-    //             .unwrap();
-    //         mock_apply(&ve);
-    //         assert_eq!(manifest.current_file_num, Some(1));
-    //
-    //         for i in 1..43u32 {
-    //             let r = i.saturating_sub(10u32);
-    //             let ve = VersionEdit {
-    //                 file_stream: Some(StreamEdit {
-    //                     new_files: new_files(vec![i]),
-    //                     deleted_files: vec![r],
-    //                 }),
-    //             };
-    //             manifest
-    //                 .record_version_edit(ve.to_owned(), ve_snapshot)
-    //                 .await
-    //                 .unwrap();
-    //             mock_apply(&ve);
-    //         }
-    //         assert_eq!(manifest.current_file_num, Some(36));
-    //     }
-    //
-    //     {
-    //         let mut manifest2 = Manifest::open(env, base.as_ref()).await.unwrap();
-    //         let versions = manifest2.list_versions().await.unwrap();
-    //         assert_eq!(manifest2.current_file_num, Some(36));
-    //
-    //         let mut recover_ver = VersionEdit {
-    //             file_stream: Some(StreamEdit::default()),
-    //         };
-    //         for ve in versions {
-    //             let recover_ver = recover_ver.file_stream.as_mut().unwrap();
-    //             let ve = ve.file_stream.as_ref().unwrap();
-    //             recover_ver.new_files.extend_from_slice(&ve.new_files);
-    //             recover_ver
-    //                 .new_files
-    //                 .retain(|f| !ve.deleted_files.iter().any(|d| *d == f.id));
-    //         }
-    //
-    //         assert_eq!(recover_ver.file_stream.as_ref().unwrap().new_files, {
-    //             let ver = ver.lock().unwrap();
-    //             ver.to_owned().file_stream.unwrap().new_files
-    //         });
-    //
-    //         let ve = VersionEdit {
-    //             file_stream: Some(StreamEdit {
-    //                 new_files: new_files(vec![1]),
-    //                 deleted_files: vec![],
-    //             }),
-    //         };
-    //         manifest2
-    //             .record_version_edit(ve.to_owned(), ve_snapshot)
-    //             .await
-    //             .unwrap(); // first write after reopen trigger roll.
-    //         assert_eq!(manifest2.current_file_num, Some(37));
-    //     }
-    // }
-    //
-    // #[photonio::test]
-    // fn test_mantain_current() {
-    //     let version_snapshot = VersionEdit::default;
-    //
-    //     let env = crate::env::Photon;
-    //
-    //     let base = tempdir::TempDir::new("curr_test2").unwrap();
-    //
-    //     {
-    //         let mut manifest = Manifest::open(env.to_owned(), base.as_ref()).await.unwrap();
-    //         manifest
-    //             .record_version_edit(
-    //                 VersionEdit {
-    //                     file_stream: Some(StreamEdit {
-    //                         new_files: new_files(vec![2, 3]),
-    //                         deleted_files: vec![1],
-    //                     }),
-    //                 },
-    //                 version_snapshot,
-    //             )
-    //             .await
-    //             .unwrap();
-    //         manifest
-    //             .record_version_edit(
-    //                 VersionEdit {
-    //                     file_stream: Some(StreamEdit {
-    //                         new_files: new_files(vec![4]),
-    //                         deleted_files: vec![],
-    //                     }),
-    //                 },
-    //                 version_snapshot,
-    //             )
-    //             .await
-    //             .unwrap();
-    //         manifest
-    //             .record_version_edit(
-    //                 VersionEdit {
-    //                     file_stream: Some(StreamEdit {
-    //                         new_files: new_files(vec![5]),
-    //                         deleted_files: vec![],
-    //                     }),
-    //                 },
-    //                 version_snapshot,
-    //             )
-    //             .await
-    //             .unwrap();
-    //     }
-    //
-    //     {
-    //         let manifest2 = Manifest::open(env, base.as_ref()).await.unwrap();
-    //         let versions = manifest2.list_versions().await.unwrap();
-    //         assert_eq!(versions.len(), 4);
-    //     }
-    // }
+
+    #[tokio::test]
+    async fn test_roll_manifest() {
+
+        let base = tempdir::TempDir::new("curr_test_roll").unwrap();
+
+        let ver = std::sync::Arc::new(std::sync::Mutex::new(VersionEdit {
+            file_stream: Some(StreamEdit {
+                new_files: vec![],
+                deleted_files: vec![],
+            }),
+        }));
+
+        let ve_snapshot = || {
+            let ver = ver.lock().unwrap();
+            ver.to_owned()
+        };
+
+        let mock_apply = |ve: &VersionEdit| {
+            let mut ver = ver.lock().unwrap();
+            let edit = ver.file_stream.as_mut().unwrap();
+            edit.new_files
+                .extend_from_slice(&ve.file_stream.as_ref().unwrap().new_files);
+            edit.new_files.retain(|f| {
+                !ve.file_stream
+                    .as_ref()
+                    .unwrap()
+                    .deleted_files
+                    .iter()
+                    .any(|d| *d == f.id)
+            })
+        };
+
+        {
+            let mut manifest = Manifest::open( base.as_ref()).await.unwrap();
+            manifest.max_file_size = 100; // set a small threshold value to trigger roll
+            assert_eq!(manifest.current_file_num, None);
+
+            let ve = VersionEdit {
+                file_stream: Some(StreamEdit {
+                    new_files: new_files(vec![0]),
+                    deleted_files: vec![],
+                }),
+            };
+            manifest
+                .record_version_edit(ve.to_owned(), ve_snapshot)
+                .await
+                .unwrap();
+            mock_apply(&ve);
+            assert_eq!(manifest.current_file_num, Some(1));
+
+
+            for i in 1..43u32 {
+                let r = i.saturating_sub(10u32);
+                let ve = VersionEdit {
+                    file_stream: Some(StreamEdit {
+                        new_files: new_files(vec![i]),
+                        deleted_files: vec![r],
+                    }),
+                };
+                manifest
+                    .record_version_edit(ve.to_owned(), ve_snapshot)
+                    .await
+                    .unwrap();
+                mock_apply(&ve);
+            }
+            assert_eq!(manifest.current_file_num, Some(36));
+        }
+
+        {
+            let mut manifest2 = Manifest::open( base.as_ref()).await.unwrap();
+            let versions = manifest2.list_versions().await.unwrap();
+            assert_eq!(manifest2.current_file_num, Some(36));
+
+            let mut recover_ver = VersionEdit {
+                file_stream: Some(StreamEdit::default()),
+            };
+            for ve in versions {
+                let recover_ver = recover_ver.file_stream.as_mut().unwrap();
+                let ve = ve.file_stream.as_ref().unwrap();
+                recover_ver.new_files.extend_from_slice(&ve.new_files);
+                recover_ver
+                    .new_files
+                    .retain(|f| !ve.deleted_files.iter().any(|d| *d == f.id));
+            }
+
+            assert_eq!(recover_ver.file_stream.as_ref().unwrap().new_files, {
+                let ver = ver.lock().unwrap();
+                ver.to_owned().file_stream.unwrap().new_files
+            });
+
+            let ve = VersionEdit {
+                file_stream: Some(StreamEdit {
+                    new_files: new_files(vec![1]),
+                    deleted_files: vec![],
+                }),
+            };
+            manifest2
+                .record_version_edit(ve.to_owned(), ve_snapshot)
+                .await
+                .unwrap(); // first write after reopen trigger roll.
+            assert_eq!(manifest2.current_file_num, Some(37));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mantain_current() {
+        let version_snapshot = VersionEdit::default;
+
+        let base = tempdir::TempDir::new("curr_test2").unwrap();
+
+        {
+            let mut manifest = Manifest::open( base.as_ref()).await.unwrap();
+            manifest
+                .record_version_edit(
+                    VersionEdit {
+                        file_stream: Some(StreamEdit {
+                            new_files: new_files(vec![2, 3]),
+                            deleted_files: vec![1],
+                        }),
+                    },
+                    version_snapshot,
+                )
+                .await
+                .unwrap();
+            manifest
+                .record_version_edit(
+                    VersionEdit {
+                        file_stream: Some(StreamEdit {
+                            new_files: new_files(vec![4]),
+                            deleted_files: vec![],
+                        }),
+                    },
+                    version_snapshot,
+                )
+                .await
+                .unwrap();
+            manifest
+                .record_version_edit(
+                    VersionEdit {
+                        file_stream: Some(StreamEdit {
+                            new_files: new_files(vec![5]),
+                            deleted_files: vec![],
+                        }),
+                    },
+                    version_snapshot,
+                )
+                .await
+                .unwrap();
+        }
+
+        {
+            let manifest2 = Manifest::open( base.as_ref()).await.unwrap();
+            let versions = manifest2.list_versions().await.unwrap();
+            assert_eq!(versions.len(), 4);
+        }
+    }
 }
