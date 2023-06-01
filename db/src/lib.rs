@@ -1,7 +1,8 @@
 pub mod error;
 mod table;
 mod wal;
-mod page;
+pub mod page;
 mod tree;
 mod store;
 mod utils;
+mod file;

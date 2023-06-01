@@ -27,4 +27,4 @@ pub enum Error {
 // }
 //
 // /// A specialized [`Result`] type returned by PhotonDB.
-// pub type Result<T, E = Error> = std::result::Result<T, E>;
+pub type Result<T, E = Error> = std::result::Result<T, E>;
